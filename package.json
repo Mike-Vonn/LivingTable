@@ -1,0 +1,9 @@
+{
+  "name": "livingtable",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "npm run dev --workspace=@livingtable/server & npm run dev --workspace=@livingtable/client",
+    "build": "npm run build --workspace=@livingtable/shared && npm run build --workspace=@livingtable/server && npm run build --workspace=@livingtable/client"
+  }
+}

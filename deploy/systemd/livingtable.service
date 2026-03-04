@@ -1,0 +1,17 @@
+[Unit]
+Description=LivingTable VTT Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/living-table
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=LIVINGTABLE_JWT_SECRET=CHANGE_ME_TO_A_RANDOM_64_CHAR_STRING
+ExecStart=/usr/bin/node packages/server/dist/index.js
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
