@@ -38,14 +38,14 @@ const upload = multer({
 
 export const uploadRouter = Router();
 
-uploadRouter.post('/api/upload/map', requireAuth, upload.single('map'), (req, res) => {
+uploadRouter.post('/api/upload/map', requireAuth, upload.single('map'), async (req, res) => {
   const campaignId = req.body.campaignId || req.query.campaignId;
   if (!campaignId) {
     res.status(400).json({ error: 'campaignId is required' });
     return;
   }
 
-  const role = store.getUserRole(req.user!.userId, campaignId);
+  const role = await store.getUserRole(req.user!.userId, campaignId);
   if (role !== 'dm') {
     res.status(403).json({ error: 'Only the DM can upload maps' });
     return;

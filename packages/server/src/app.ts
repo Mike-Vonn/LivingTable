@@ -45,7 +45,7 @@ export function createApp() {
       // If invite code provided, join that campaign
       if (inviteCode) {
         try {
-          store.joinCampaign(user.id, inviteCode);
+          await store.joinCampaign(user.id, inviteCode);
         } catch {
           // User created but invite code failed — still return success
         }
@@ -79,28 +79,28 @@ export function createApp() {
 
   // ---- Campaign routes (all require auth) ----
 
-  app.get('/api/campaigns', requireAuth, (req, res) => {
-    const memberships = store.getUserCampaigns(req.user!.userId);
+  app.get('/api/campaigns', requireAuth, async (req, res) => {
+    const memberships = await store.getUserCampaigns(req.user!.userId);
     res.json(memberships);
   });
 
-  app.post('/api/campaigns', requireAuth, (req, res) => {
+  app.post('/api/campaigns', requireAuth, async (req, res) => {
     const { name } = req.body;
     if (!name) {
       res.status(400).json({ error: 'Campaign name is required' });
       return;
     }
-    const campaign = store.createCampaign(name, req.user!.userId);
+    const campaign = await store.createCampaign(name, req.user!.userId);
     res.status(201).json(campaign);
   });
 
-  app.get('/api/campaigns/:id', requireAuth, (req, res) => {
-    const role = store.getUserRole(req.user!.userId, req.params.id);
+  app.get('/api/campaigns/:id', requireAuth, async (req, res) => {
+    const role = await store.getUserRole(req.user!.userId, req.params.id);
     if (!role) {
       res.status(403).json({ error: 'Not a member of this campaign' });
       return;
     }
-    const campaign = store.getCampaign(req.params.id);
+    const campaign = await store.getCampaign(req.params.id);
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
@@ -114,15 +114,15 @@ export function createApp() {
     }
   });
 
-  app.post('/api/campaigns/join', requireAuth, (req, res) => {
+  app.post('/api/campaigns/join', requireAuth, async (req, res) => {
     try {
       const { inviteCode } = req.body;
       if (!inviteCode) {
         res.status(400).json({ error: 'Invite code is required' });
         return;
       }
-      const campaign = store.joinCampaign(req.user!.userId, inviteCode);
-      const role = store.getUserRole(req.user!.userId, campaign.id);
+      const campaign = await store.joinCampaign(req.user!.userId, inviteCode);
+      const role = await store.getUserRole(req.user!.userId, campaign.id);
       res.json({ campaign, role });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Join failed';
@@ -131,9 +131,9 @@ export function createApp() {
     }
   });
 
-  app.post('/api/campaigns/:id/invite-code', requireAuth, (req, res) => {
+  app.post('/api/campaigns/:id/invite-code', requireAuth, async (req, res) => {
     try {
-      const inviteCode = store.regenerateInviteCode(req.params.id, req.user!.userId);
+      const inviteCode = await store.regenerateInviteCode(req.params.id, req.user!.userId);
       res.json({ inviteCode });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed';
@@ -141,19 +141,19 @@ export function createApp() {
     }
   });
 
-  app.get('/api/campaigns/:id/players', requireAuth, (req, res) => {
-    const role = store.getUserRole(req.user!.userId, req.params.id);
+  app.get('/api/campaigns/:id/players', requireAuth, async (req, res) => {
+    const role = await store.getUserRole(req.user!.userId, req.params.id);
     if (!role) {
       res.status(403).json({ error: 'Not a member of this campaign' });
       return;
     }
-    const players = store.getCampaignPlayers(req.params.id);
+    const players = await store.getCampaignPlayers(req.params.id);
     res.json(players);
   });
 
-  app.delete('/api/campaigns/:id/players/:userId', requireAuth, (req, res) => {
+  app.delete('/api/campaigns/:id/players/:userId', requireAuth, async (req, res) => {
     try {
-      store.removePlayerFromCampaign(req.params.id, req.params.userId, req.user!.userId);
+      await store.removePlayerFromCampaign(req.params.id, req.params.userId, req.user!.userId);
       res.json({ success: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed';

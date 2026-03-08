@@ -43,9 +43,9 @@ export function registerSocketHandlers(io: Server): void {
     console.log(`Socket connected: ${user.username} (${socket.id})`);
 
     // Handle campaign join
-    socket.on(SOCKET_EVENTS.JOIN_CAMPAIGN, (data: { campaignId: string }) => {
+    socket.on(SOCKET_EVENTS.JOIN_CAMPAIGN, async (data: { campaignId: string }) => {
       const { campaignId } = data;
-      const role = store.getUserRole(user.userId, campaignId);
+      const role = await store.getUserRole(user.userId, campaignId);
 
       if (!role) {
         socket.emit('error', { message: 'Not a member of this campaign' });

@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// Authentication (migrated from JSON files)
+// ============================================
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  displayName  String   @map("display_name")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  dmCampaigns      Campaign[]         @relation("CampaignDM")
+  campaignMembers  CampaignMember[]
+  playerCharacters PlayerCharacter[]
+
+  @@map("users")
+}
+
+model Campaign {
+  id         String   @id @default(uuid())
+  name       String
+  dmUserId   String   @map("dm_user_id")
+  inviteCode String   @unique @map("invite_code")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  dm      User             @relation("CampaignDM", fields: [dmUserId], references: [id])
+  members CampaignMember[]
+  worlds  World[]
+
+  @@map("campaigns")
+}
+
+model CampaignMember {
+  id         String @id @default(uuid())
+  campaignId String @map("campaign_id")
+  userId     String @map("user_id")
+  role       String @default("player") // 'dm' or 'player'
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, userId])
+  @@map("campaign_members")
+}
+
+// ============================================
+// World & Time
+// ============================================
+
+model World {
+  id         String @id @default(uuid())
+  campaignId String @map("campaign_id")
+  name       String
+
+  // Clock state
+  currentTick    BigInt @default(0) @map("current_tick")
+  ticksPerMinute Int    @default(1) @map("ticks_per_minute")
+
+  // Calendar: Harptos by default
+  calendarSystem String @default("harptos") @map("calendar_system")
+  startYear      Int    @default(1491) @map("start_year")
+  startMonth     Int    @default(1) @map("start_month")
+  startDay       Int    @default(1) @map("start_day")
+
+  // Simulation tuning (JSONB)
+  simulationConfig Json @default("{}") @map("simulation_config")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  campaign         Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  locations        Location[]
+  npcs             Npc[]
+  snapshots        WorldSnapshot[]
+  weatherData      WeatherData[]
+  playerCharacters PlayerCharacter[]
+
+  @@map("worlds")
+}
+
+model WorldSnapshot {
+  id        String   @id @default(uuid())
+  worldId   String   @map("world_id")
+  name      String
+  reason    String   // "session_start", "before_time_advance", "manual", "auto"
+  tick      BigInt   // world tick at time of snapshot
+  stateJson Json     @map("state_json") // full serialized world state
+  createdAt DateTime @default(now()) @map("created_at")
+
+  world World @relation(fields: [worldId], references: [id], onDelete: Cascade)
+
+  @@index([worldId, tick])
+  @@map("world_snapshots")
+}
+
+// ============================================
+// Geography
+// ============================================
+
+model Location {
+  id       String  @id @default(uuid())
+  worldId  String  @map("world_id")
+  parentId String? @map("parent_id")
+
+  name         String
+  locationType String @map("location_type")
+  // 'region', 'settlement', 'district', 'building', 'room', 'wilderness', 'road'
+
+  description String?
+
+  // Position on the world/region map (for rendering)
+  mapX Float? @map("map_x")
+  mapY Float? @map("map_y")
+
+  // For settlements
+  population      Int?   @default(0)
+  prosperityIndex Float? @default(0.5) @map("prosperity_index")
+
+  // Weather region mapping
+  weatherRegion String? @map("weather_region")
+
+  // For buildings/rooms: associated battle map
+  battleMapUrl    String? @map("battle_map_url")
+  battleMapWidth  Int?    @map("battle_map_width")
+  battleMapHeight Int?    @map("battle_map_height")
+  gridConfig      Json?   @map("grid_config")
+
+  // Metadata
+  tags      String[] @default([])
+  extraData Json     @default("{}") @map("extra_data")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  world           World                @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  parent          Location?            @relation("LocationHierarchy", fields: [parentId], references: [id])
+  children        Location[]           @relation("LocationHierarchy")
+  npcsHere        Npc[]                @relation("NPCCurrentLocation")
+  npcsHome        Npc[]                @relation("NPCHomeLocation")
+  connectionsFrom LocationConnection[] @relation("ConnectionFrom")
+  connectionsTo   LocationConnection[] @relation("ConnectionTo")
+
+  @@index([worldId, locationType])
+  @@index([worldId, parentId])
+  @@map("locations")
+}
+
+model LocationConnection {
+  id             String @id @default(uuid())
+  fromLocationId String @map("from_location_id")
+  toLocationId   String @map("to_location_id")
+
+  connectionType    String  @map("connection_type") // 'road', 'trail', 'river', 'portal', 'stairs'
+  travelTimeMinutes Int     @map("travel_time_minutes") // base travel time on foot
+  dangerLevel       Int     @default(0) @map("danger_level") // 0-10
+  description       String?
+  bidirectional     Boolean @default(true)
+
+  fromLocation Location @relation("ConnectionFrom", fields: [fromLocationId], references: [id], onDelete: Cascade)
+  toLocation   Location @relation("ConnectionTo", fields: [toLocationId], references: [id], onDelete: Cascade)
+
+  @@map("location_connections")
+}
+
+// ============================================
+// NPCs
+// ============================================
+
+model Npc {
+  id      String @id @default(uuid())
+  worldId String @map("world_id")
+
+  // Identity
+  name        String
+  race        String
+  gender      String
+  occupation  String
+  age         Int?
+  description String?
+
+  // Simulation tier: 1 (full), 2 (standard), 3 (light)
+  simulationTier Int @default(3) @map("simulation_tier")
+
+  // Personality (Tier 1-2)
+  personalityTraits String? @map("personality_traits")
+  ideals            String?
+  bonds             String?
+  flaws             String?
+  backstory         String?
+
+  // Stats (for rules engine, future phases)
+  abilityScores    Json?  @map("ability_scores") // { str, dex, con, int, wis, cha }
+  skills           Json?  // { perception: 3, stealth: 2, ... }
+  hitPointsMax     Int?   @map("hit_points_max")
+  hitPointsCurrent Int?   @map("hit_points_current")
+  armorClass       Int?   @map("armor_class")
+  challengeRating  Float? @map("challenge_rating")
+
+  // Location
+  currentLocationId String  @map("current_location_id")
+  homeLocationId    String? @map("home_location_id")
+  currentActivity   String? @map("current_activity")
+
+  // Schedule
+  schedule Json? // NPCSchedule as JSONB
+
+  // State
+  isAlive       Boolean @default(true) @map("is_alive")
+  condition     String  @default("normal") // normal, injured, unconscious, captured, sick, fleeing
+  morale        Int     @default(50)
+  partyAttitude Int     @default(0) @map("party_attitude") // -100 to +100
+
+  // Knowledge & Rumors (for later phases, store as JSONB)
+  knowledge Json @default("[]")
+  rumors    Json @default("[]")
+
+  // Economy (for later phases)
+  wealth Json @default("{}") // { gp: 0, sp: 0, cp: 0, ep: 0, pp: 0 }
+
+  // Faction membership (for later phases)
+  factionIds String[] @default([]) @map("faction_ids")
+
+  // Token appearance on battle map
+  tokenColor    String  @default("#666666") @map("token_color")
+  tokenImageUrl String? @map("token_image_url")
+  tokenSize     Int     @default(1) @map("token_size") // grid cells
+
+  // Metadata
+  tags      String[] @default([])
+  dmNotes   String?  @map("dm_notes")
+  extraData Json     @default("{}") @map("extra_data")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  world           World         @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  currentLocation Location      @relation("NPCCurrentLocation", fields: [currentLocationId], references: [id])
+  homeLocation    Location?     @relation("NPCHomeLocation", fields: [homeLocationId], references: [id])
+  pcMemories      NpcPcMemory[]
+
+  @@index([worldId, simulationTier])
+  @@index([worldId, currentLocationId])
+  @@index([worldId, isAlive])
+  @@map("npcs")
+}
+
+model NpcPcMemory {
+  id    String @id @default(uuid())
+  npcId String @map("npc_id")
+  pcId  String @map("pc_id") // PlayerCharacter ID
+
+  attitude            Int    @default(0) // -100 to +100
+  interactionCount    Int    @default(0) @map("interaction_count")
+  lastInteractionTick BigInt? @map("last_interaction_tick")
+  memories            Json   @default("[]") // array of { tick, description, attitudeChange }
+
+  npc Npc @relation(fields: [npcId], references: [id], onDelete: Cascade)
+
+  @@unique([npcId, pcId])
+  @@map("npc_pc_memory")
+}
+
+// ============================================
+// Player Characters
+// ============================================
+
+model PlayerCharacter {
+  id      String @id @default(uuid())
+  worldId String @map("world_id")
+  userId  String @map("user_id")
+
+  name   String
+  race   String
+  class_ String @map("class")
+  level  Int    @default(1)
+
+  // Full character sheet as JSONB (flexible for different rulesets)
+  abilityScores    Json @map("ability_scores") // { str, dex, con, int, wis, cha }
+  skills           Json @default("{}") // { athletics: { proficient: true, expertise: false }, ... }
+  savingThrows     Json @default("{}") @map("saving_throws")
+  hitPointsMax     Int  @map("hit_points_max")
+  hitPointsCurrent Int  @map("hit_points_current")
+  hitDice          Json @default("{}") @map("hit_dice")
+  armorClass       Int  @map("armor_class")
+  speed            Int  @default(30)
+  proficiencyBonus Int  @default(2) @map("proficiency_bonus")
+  initiative       Int  @default(0)
+
+  // Background and personality
+  background        String?
+  personalityTraits String? @map("personality_traits")
+  ideals            String?
+  bonds             String?
+  flaws             String?
+  backstory         String?
+
+  // Features, traits, spells
+  classFeatures  Json @default("[]") @map("class_features")
+  racialTraits   Json @default("[]") @map("racial_traits")
+  feats          Json @default("[]")
+  spellSlots     Json @default("{}") @map("spell_slots")
+  preparedSpells Json @default("[]") @map("prepared_spells")
+  knownSpells    Json @default("[]") @map("known_spells")
+
+  // Inventory and wealth (JSONB arrays)
+  inventory Json @default("[]")
+  wealth    Json @default("{}") // { gp, sp, cp, ep, pp }
+
+  // Conditions
+  conditions      String[] @default([])
+  deathSaves      Json     @default("{}") @map("death_saves") // { successes: 0, failures: 0 }
+  exhaustionLevel Int      @default(0) @map("exhaustion_level")
+
+  // Token appearance
+  tokenColor    String  @default("#3366cc") @map("token_color")
+  tokenImageUrl String? @map("token_image_url")
+
+  // Source
+  importSource String? @map("import_source") // "ddb" for D&D Beyond, "manual", etc.
+  importData   Json?   @map("import_data")   // raw import data for reference
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  world World @relation(fields: [worldId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@index([worldId])
+  @@index([userId])
+  @@map("player_characters")
+}
+
+// ============================================
+// Weather
+// ============================================
+
+model WeatherData {
+  id            String @id @default(uuid())
+  worldId       String @map("world_id")
+  weatherRegion String @map("weather_region") // "sword_coast_central"
+  dayOfYear     Int    @map("day_of_year")     // 1-365
+  yearSource    Int    @map("year_source")     // which real-world year
+
+  temperatureHighC  Float  @map("temperature_high_c")
+  temperatureLowC   Float  @map("temperature_low_c")
+  precipitationMm   Float  @map("precipitation_mm")
+  precipitationType String @map("precipitation_type") // "none","rain","snow","sleet","hail"
+  windSpeedKph      Float  @map("wind_speed_kph")
+  windDirection     String @map("wind_direction")
+  cloudCoverPct     Float  @map("cloud_cover_pct")
+  humidityPct       Float  @map("humidity_pct")
+
+  // Derived game-relevant fields
+  travelCondition    String @map("travel_condition") // "clear","poor","dangerous","impassable"
+  outdoorWorkModifier Float @map("outdoor_work_modifier") // 0.0-1.0
+  combatModifier     String @map("combat_modifier") // "none","visibility_reduced","difficult_terrain"
+  description        String // "A cold, overcast day with occasional drizzle"
+
+  world World @relation(fields: [worldId], references: [id], onDelete: Cascade)
+
+  @@unique([worldId, weatherRegion, dayOfYear, yearSource])
+  @@index([worldId, weatherRegion, dayOfYear])
+  @@map("weather_data")
+}

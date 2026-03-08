@@ -1,13 +1,7 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import path from 'node:path';
 import bcrypt from 'bcrypt';
-import { v4 as uuidv4 } from 'uuid';
 import type { User, Campaign, CampaignMembership, PublicUser } from '@livingtable/shared';
-import { DATA_DIR } from '../config.js';
+import { prisma } from '../db/client.js';
 
-const AUTH_DIR = path.join(DATA_DIR, 'auth');
-const USERS_FILE = path.join(AUTH_DIR, 'users.json');
-const CAMPAIGNS_FILE = path.join(AUTH_DIR, 'campaigns.json');
 const SALT_ROUNDS = 10;
 
 // Characters for invite codes — exclude ambiguous chars (0/O, 1/I/L)
@@ -21,150 +15,188 @@ function generateInviteCode(): string {
   return code;
 }
 
+/** Map a Prisma campaign + members to the shared Campaign type */
+function toCampaign(row: {
+  id: string;
+  name: string;
+  dmUserId: string;
+  inviteCode: string;
+  createdAt: Date;
+  updatedAt: Date;
+  members?: { userId: string; role: string }[];
+}): Campaign {
+  const playerUserIds = (row.members ?? [])
+    .filter((m) => m.role === 'player')
+    .map((m) => m.userId);
+  return {
+    id: row.id,
+    name: row.name,
+    dmUserId: row.dmUserId,
+    playerUserIds,
+    inviteCode: row.inviteCode,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function toUser(row: {
+  id: string;
+  username: string;
+  passwordHash: string;
+  displayName: string;
+  createdAt: Date;
+}): User {
+  return {
+    id: row.id,
+    username: row.username,
+    passwordHash: row.passwordHash,
+    displayName: row.displayName,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 export class CampaignStore {
-  private users: User[] = [];
-  private campaigns: Campaign[] = [];
-
-  constructor() {
-    mkdirSync(AUTH_DIR, { recursive: true });
-    this.load();
-  }
-
-  private load(): void {
-    if (existsSync(USERS_FILE)) {
-      this.users = JSON.parse(readFileSync(USERS_FILE, 'utf-8'));
-    }
-    if (existsSync(CAMPAIGNS_FILE)) {
-      this.campaigns = JSON.parse(readFileSync(CAMPAIGNS_FILE, 'utf-8'));
-    }
-  }
-
-  private persist(): void {
-    writeFileSync(USERS_FILE, JSON.stringify(this.users, null, 2), 'utf-8');
-    writeFileSync(CAMPAIGNS_FILE, JSON.stringify(this.campaigns, null, 2), 'utf-8');
-  }
-
   // ---- Users ----
 
   async createUser(username: string, password: string, displayName: string): Promise<User> {
-    if (this.users.find((u) => u.username === username)) {
-      throw new Error('Username already taken');
-    }
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    const user: User = {
-      id: uuidv4(),
-      username,
-      passwordHash,
-      displayName,
-      createdAt: new Date().toISOString(),
-    };
-    this.users.push(user);
-    this.persist();
-    return user;
+    try {
+      const row = await prisma.user.create({
+        data: { username, passwordHash, displayName },
+      });
+      return toUser(row);
+    } catch (err: unknown) {
+      // Prisma unique constraint error
+      if ((err as { code?: string }).code === 'P2002') {
+        throw new Error('Username already taken');
+      }
+      throw err;
+    }
   }
 
   async authenticateUser(username: string, password: string): Promise<User | null> {
-    const user = this.users.find((u) => u.username === username);
-    if (!user) return null;
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    return valid ? user : null;
+    const row = await prisma.user.findUnique({ where: { username } });
+    if (!row) return null;
+    const valid = await bcrypt.compare(password, row.passwordHash);
+    return valid ? toUser(row) : null;
   }
 
-  getUserById(id: string): User | null {
-    return this.users.find((u) => u.id === id) ?? null;
+  async getUserById(id: string): Promise<User | null> {
+    const row = await prisma.user.findUnique({ where: { id } });
+    return row ? toUser(row) : null;
   }
 
-  getPublicUser(id: string): PublicUser | null {
-    const user = this.getUserById(id);
-    if (!user) return null;
-    return { id: user.id, username: user.username, displayName: user.displayName };
+  async getPublicUser(id: string): Promise<PublicUser | null> {
+    const row = await prisma.user.findUnique({
+      where: { id },
+      select: { id: true, username: true, displayName: true },
+    });
+    return row ?? null;
   }
 
   // ---- Campaigns ----
 
-  createCampaign(name: string, dmUserId: string): Campaign {
-    const now = new Date().toISOString();
-    const campaign: Campaign = {
-      id: uuidv4(),
-      name,
-      dmUserId,
-      playerUserIds: [],
-      inviteCode: generateInviteCode(),
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.campaigns.push(campaign);
-    this.persist();
-    return campaign;
+  async createCampaign(name: string, dmUserId: string): Promise<Campaign> {
+    const campaign = await prisma.campaign.create({
+      data: {
+        name,
+        dmUserId,
+        inviteCode: generateInviteCode(),
+        members: {
+          create: { userId: dmUserId, role: 'dm' },
+        },
+      },
+      include: { members: { select: { userId: true, role: true } } },
+    });
+    return toCampaign(campaign);
   }
 
-  getCampaign(id: string): Campaign | null {
-    return this.campaigns.find((c) => c.id === id) ?? null;
+  async getCampaign(id: string): Promise<Campaign | null> {
+    const row = await prisma.campaign.findUnique({
+      where: { id },
+      include: { members: { select: { userId: true, role: true } } },
+    });
+    return row ? toCampaign(row) : null;
   }
 
-  getCampaignByInviteCode(code: string): Campaign | null {
-    return this.campaigns.find((c) => c.inviteCode === code.toUpperCase()) ?? null;
+  async getCampaignByInviteCode(code: string): Promise<Campaign | null> {
+    const row = await prisma.campaign.findUnique({
+      where: { inviteCode: code.toUpperCase() },
+      include: { members: { select: { userId: true, role: true } } },
+    });
+    return row ? toCampaign(row) : null;
   }
 
-  joinCampaign(userId: string, inviteCode: string): Campaign {
-    const campaign = this.getCampaignByInviteCode(inviteCode);
+  async joinCampaign(userId: string, inviteCode: string): Promise<Campaign> {
+    const campaign = await prisma.campaign.findUnique({
+      where: { inviteCode: inviteCode.toUpperCase() },
+      include: { members: { select: { userId: true, role: true } } },
+    });
     if (!campaign) {
       throw new Error('Invalid invite code');
     }
-    if (campaign.dmUserId === userId || campaign.playerUserIds.includes(userId)) {
+    const alreadyMember = campaign.members.some((m) => m.userId === userId);
+    if (alreadyMember) {
       throw new Error('Already a member of this campaign');
     }
-    campaign.playerUserIds.push(userId);
-    campaign.updatedAt = new Date().toISOString();
-    this.persist();
-    return campaign;
+    await prisma.campaignMember.create({
+      data: { campaignId: campaign.id, userId, role: 'player' },
+    });
+    // Re-fetch to include the new member
+    const updated = await prisma.campaign.findUnique({
+      where: { id: campaign.id },
+      include: { members: { select: { userId: true, role: true } } },
+    });
+    return toCampaign(updated!);
   }
 
-  getUserCampaigns(userId: string): CampaignMembership[] {
-    const memberships: CampaignMembership[] = [];
-    for (const c of this.campaigns) {
-      if (c.dmUserId === userId) {
-        memberships.push({ campaignId: c.id, campaignName: c.name, role: 'dm' });
-      } else if (c.playerUserIds.includes(userId)) {
-        memberships.push({ campaignId: c.id, campaignName: c.name, role: 'player' });
-      }
-    }
-    return memberships;
+  async getUserCampaigns(userId: string): Promise<CampaignMembership[]> {
+    const memberships = await prisma.campaignMember.findMany({
+      where: { userId },
+      include: { campaign: { select: { id: true, name: true } } },
+    });
+    return memberships.map((m) => ({
+      campaignId: m.campaign.id,
+      campaignName: m.campaign.name,
+      role: m.role as 'dm' | 'player',
+    }));
   }
 
-  getUserRole(userId: string, campaignId: string): 'dm' | 'player' | null {
-    const campaign = this.getCampaign(campaignId);
-    if (!campaign) return null;
-    if (campaign.dmUserId === userId) return 'dm';
-    if (campaign.playerUserIds.includes(userId)) return 'player';
-    return null;
+  async getUserRole(userId: string, campaignId: string): Promise<'dm' | 'player' | null> {
+    const member = await prisma.campaignMember.findUnique({
+      where: { campaignId_userId: { campaignId, userId } },
+    });
+    return member ? (member.role as 'dm' | 'player') : null;
   }
 
-  regenerateInviteCode(campaignId: string, requestingUserId: string): string {
-    const campaign = this.getCampaign(campaignId);
+  async regenerateInviteCode(campaignId: string, requestingUserId: string): Promise<string> {
+    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
     if (!campaign) throw new Error('Campaign not found');
     if (campaign.dmUserId !== requestingUserId) throw new Error('Only the DM can regenerate invite codes');
-    campaign.inviteCode = generateInviteCode();
-    campaign.updatedAt = new Date().toISOString();
-    this.persist();
-    return campaign.inviteCode;
+    const newCode = generateInviteCode();
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { inviteCode: newCode },
+    });
+    return newCode;
   }
 
-  removePlayerFromCampaign(campaignId: string, userId: string, requestingUserId: string): void {
-    const campaign = this.getCampaign(campaignId);
+  async removePlayerFromCampaign(campaignId: string, userId: string, requestingUserId: string): Promise<void> {
+    const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
     if (!campaign) throw new Error('Campaign not found');
     if (campaign.dmUserId !== requestingUserId) throw new Error('Only the DM can remove players');
-    campaign.playerUserIds = campaign.playerUserIds.filter((id) => id !== userId);
-    campaign.updatedAt = new Date().toISOString();
-    this.persist();
+    await prisma.campaignMember.deleteMany({
+      where: { campaignId, userId, role: 'player' },
+    });
   }
 
-  getCampaignPlayers(campaignId: string): PublicUser[] {
-    const campaign = this.getCampaign(campaignId);
-    if (!campaign) return [];
-    const playerIds = [campaign.dmUserId, ...campaign.playerUserIds];
-    return playerIds
-      .map((id) => this.getPublicUser(id))
-      .filter((u): u is PublicUser => u !== null);
+  async getCampaignPlayers(campaignId: string): Promise<PublicUser[]> {
+    const members = await prisma.campaignMember.findMany({
+      where: { campaignId },
+      include: {
+        user: { select: { id: true, username: true, displayName: true } },
+      },
+    });
+    return members.map((m) => m.user);
   }
 }

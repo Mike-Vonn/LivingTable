@@ -12,6 +12,7 @@ export const PORT = parseInt(process.env.PORT || '3001', 10);
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const CLIENT_DIST = path.resolve(PROJECT_ROOT, 'packages/client/dist');
 export const JWT_EXPIRY = '24h';
+export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://livingtable:livingtable@localhost:5432/livingtable';
 
 export const CORS_ORIGINS = process.env.LIVINGTABLE_CORS_ORIGINS
   ? process.env.LIVINGTABLE_CORS_ORIGINS.split(',')
